@@ -15,7 +15,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config import Config
-from ..utils.llm_client import LLMClient
+from ..utils.llm_client import LLMClient, LLMResponseError
 from ..utils.logger import get_logger
 from .text_processor import TextProcessor
 
@@ -103,10 +103,37 @@ class EntityExtractor:
         indices = sorted({int(round(i * step)) for i in range(max_chunks)})
         return [(index, chunks[index]) for index in indices]
 
+    # Token budget for one extraction call. The first attempt allows a rich
+    # answer, the compact retry is used when the model hits the limit.
+    EXTRACT_MAX_TOKENS = 3000
+    EXTRACT_RETRY_MAX_TOKENS = 1600
+
     def _extract_chunk(
         self, chunk: str, entity_types: List[str]
     ) -> Dict[str, Any]:
+        """Extract entities and relationships from one chunk.
+
+        A truncated answer used to be dropped completely, which left the
+        graph without a single relationship. When the model hits the token
+        limit the extraction is retried with a compact prompt that asks for
+        fewer but shorter entities.
+        """
+        try:
+            return self._extract_chunk_once(chunk, entity_types, compact=False)
+        except LLMResponseError as exc:
+            if not getattr(exc, "finish_reason", None) == "length":
+                raise
+            logger.warning(
+                "Entity extraction hit the token limit, retrying compact: %s", exc
+            )
+        return self._extract_chunk_once(chunk, entity_types, compact=True)
+
+    def _extract_chunk_once(
+        self, chunk: str, entity_types: List[str], compact: bool = False
+    ) -> Dict[str, Any]:
         type_list = ", ".join(entity_types)
+        entity_budget = "3-6" if compact else "3-12"
+        summary_budget = "20 words" if compact else "40 words"
         prompt = f"""Extract the most important real entities and relationships from this text.
 
 Allowed entity types: {type_list}
@@ -132,10 +159,10 @@ Return strict JSON with this shape:
 }}
 
 Rules:
-- Extract 3-12 concrete entities (people, organizations, places, products, events).
+- Extract {entity_budget} concrete entities (people, organizations, places, products, events).
 - Use only names that actually appear in the text.
 - Do not invent facts.
-- Keep summaries under 60 words.
+- Keep summaries under {summary_budget}.
 - If no clear entities exist, return empty arrays.
 
 TEXT:
@@ -153,7 +180,7 @@ TEXT:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-            max_tokens=1200,
+            max_tokens=self.EXTRACT_RETRY_MAX_TOKENS if compact else self.EXTRACT_MAX_TOKENS,
         )
         return result if isinstance(result, dict) else {}
 
