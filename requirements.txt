@@ -1,0 +1,29 @@
+# ===========================================
+# Veyronix Backend Dependencies
+# Python 3.12 (3.11 also supported)
+# Install: pip install -r requirements.txt
+# ===========================================
+
+# Web framework
+flask>=3.0.0
+flask-cors>=6.0.0
+
+# LLM provider (NVIDIA NIM is OpenAI-compatible)
+openai>=1.0.0
+httpx>=0.27.0
+
+# Document parsing
+PyMuPDF>=1.24.0
+charset-normalizer>=3.0.0
+chardet>=5.0.0
+
+# Configuration and validation
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Production WSGI server (Linux only; Flask dev server is used on Windows)
+gunicorn>=21.2.0; sys_platform != "win32"
+
+# Tests (optional, used by CI)
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

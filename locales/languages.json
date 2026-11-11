@@ -1,0 +1,6 @@
+{
+  "en": {
+    "label": "English",
+    "llmInstruction": "Respond in English or Roman Urdu only. Never use Chinese, Japanese, Korean, Arabic, or Cyrillic scripts."
+  }
+}
