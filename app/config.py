@@ -43,20 +43,22 @@ class Config:
     JSON_AS_ASCII = False
 
     # ===== NVIDIA NIM — Primary LLM Provider =====
+    # NOTE: NVIDIA NIM model ids must include the publisher prefix, e.g.
+    # "nvidia/nemotron-3.5-super-vl-120b-a12b". The bare id returns HTTP 404.
     LLM_API_KEY = (os.environ.get('LLM_API_KEY') or '').strip()
     LLM_BASE_URL = os.environ.get(
         'LLM_BASE_URL', 'https://integrate.api.nvidia.com/v1'
     ).strip()
     LLM_MODEL_NAME = os.environ.get(
-        'LLM_MODEL_NAME', 'nemotron-3.5-super-vl-120b-a12b'
+        'LLM_MODEL_NAME', 'nvidia/nemotron-3.5-super-vl-120b-a12b'
     ).strip()
 
     # LLM Router (both tiers use Nemotron 3.5 Super VL 120B A12B)
     LLM_ROUTER_SMALL = os.environ.get(
-        'LLM_ROUTER_SMALL', 'nemotron-3.5-super-vl-120b-a12b'
+        'LLM_ROUTER_SMALL', 'nvidia/nemotron-3.5-super-vl-120b-a12b'
     ).strip()
     LLM_ROUTER_LARGE = os.environ.get(
-        'LLM_ROUTER_LARGE', 'nemotron-3.5-super-vl-120b-a12b'
+        'LLM_ROUTER_LARGE', 'nvidia/nemotron-3.5-super-vl-120b-a12b'
     ).strip()
 
     # Rate limiting for the NVIDIA NIM free tier (typically 10 RPM)

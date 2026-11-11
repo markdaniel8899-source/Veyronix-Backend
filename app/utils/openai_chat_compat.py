@@ -58,7 +58,12 @@ def create_chat_completion(
 
 
 def extract_chat_completion_text(response: Any) -> str:
-    """Extract plain text from chat completion response across SDK content shapes."""
+    """Extract plain text from chat completion response across SDK content shapes.
+
+    Reasoning models (for example Nemotron 3 Ultra or Nemotron 3.5 Lightning)
+    can answer with ``content=null`` and put the answer in
+    ``reasoning_content``. That fallback keeps the text from being lost.
+    """
     choices = getattr(response, "choices", None) or []
     if not choices:
         return ""
@@ -70,9 +75,8 @@ def extract_chat_completion_text(response: Any) -> str:
     content = getattr(message, "content", "")
 
     if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
+        text = content
+    elif isinstance(content, list):
         chunks: List[str] = []
         for item in content:
             if isinstance(item, dict):
@@ -96,6 +100,17 @@ def extract_chat_completion_text(response: Any) -> str:
             if isinstance(content_obj, str):
                 chunks.append(content_obj)
 
-        return "".join(chunks).strip()
+        text = "".join(chunks).strip()
+    else:
+        text = str(content or "")
 
-    return str(content or "")
+    if text and text.strip():
+        return text
+
+    # Fall back to the reasoning channel.
+    reasoning = getattr(message, "reasoning_content", "") or ""
+    if isinstance(reasoning, list):
+        reasoning = "".join(
+            part for part in reasoning if isinstance(part, str)
+        )
+    return str(reasoning or "").strip()
