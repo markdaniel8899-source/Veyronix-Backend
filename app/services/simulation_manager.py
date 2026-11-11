@@ -327,6 +327,24 @@ class SimulationManager:
                     entities = filtered_entities
             
             entity_types = sorted({get_entity_type(e) for e in entities})
+            
+            # The guard stays before the cast expansion: an empty graph must
+            # fail fast instead of silently inventing a cast.
+            if not entities:
+                state.status = SimulationStatus.FAILED
+                state.error = "No matching entities found; check that the graph was built correctly"
+                self._save_simulation_state(state)
+                raise ValueError(state.error)
+            
+            # A graph normally yields only a handful of nodes. Expand them into
+            # a diverse cast of personas so the simulation behaves like a real
+            # community instead of a few isolated speakers.
+            profile_generator = OasisProfileGenerator(graph_id=state.graph_id)
+            entities = profile_generator.expand_entity_cast(
+                entities,
+                target_count=Config.SIMULATION_MIN_ENTITIES,
+            )
+            
             state.entities_count = len(entities)
             state.entity_types = entity_types
             
@@ -337,12 +355,6 @@ class SimulationManager:
                     current=len(entities),
                     total=len(entities)
                 )
-            
-            if not entities:
-                state.status = SimulationStatus.FAILED
-                state.error = "No matching entities found; check that the graph was built correctly"
-                self._save_simulation_state(state)
-                raise ValueError(state.error)
             
             # ========== stage 2: generate Agent Profile ==========
             total_entities = len(entities)
@@ -355,8 +367,9 @@ class SimulationManager:
                     total=total_entities
                 )
             
-            # Incoming graph_id to enable Zep retrieve function，get richer of context
-            generator = OasisProfileGenerator(graph_id=state.graph_id)
+            # The cast was already expanded above, so this generator only has
+            # to turn the personas into profiles.
+            generator = profile_generator
             
             def profile_progress(current, total, msg):
                 if progress_callback:

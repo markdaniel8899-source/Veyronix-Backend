@@ -85,9 +85,32 @@ class Config:
 
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(
-        os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '5')
+        os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '20')
     )
     OASIS_SIMULATION_DATA_DIR = os.path.join(UPLOAD_FOLDER, 'simulations')
+
+    # ===== Simulation depth and realism =====
+    # Target size of the simulated cast. The graph usually yields only a
+    # handful of nodes, so the cast is expanded into distinct personas.
+    SIMULATION_MIN_ENTITIES = int(
+        os.environ.get('SIMULATION_MIN_ENTITIES', '50')
+    )
+    SIMULATION_MAX_ENTITIES = int(
+        os.environ.get('SIMULATION_MAX_ENTITIES', '120')
+    )
+    # How many agents may post in a single round.
+    SIMULATION_MAX_ACTIVE_PER_ROUND = int(
+        os.environ.get('SIMULATION_MAX_ACTIVE_PER_ROUND', '12')
+    )
+    # How many earlier posts are shown to an agent so it can reply.
+    SIMULATION_CONTEXT_POSTS = int(
+        os.environ.get('SIMULATION_CONTEXT_POSTS', '5')
+    )
+    # Share of the posts that answer another agent instead of starting a
+    # new thread. This is what makes the conversation two-way.
+    SIMULATION_REPLY_RATIO = float(
+        os.environ.get('SIMULATION_REPLY_RATIO', '0.7')
+    )
 
     # OASIS platform available actions
     OASIS_TWITTER_ACTIONS = [

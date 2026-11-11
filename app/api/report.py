@@ -6,6 +6,7 @@ Provides simulation report generation, retrieval, and chat interfaces.
 import os
 import traceback
 import threading
+from contextlib import nullcontext
 from flask import request, jsonify, send_file
 
 from . import report_bp

@@ -57,10 +57,16 @@ class AgentAction:
     platform: str  # twitter / reddit
     agent_id: int
     agent_name: str
-    action_type: str  # CREATE_POST, CREATE_COMMENT, etc.
+    action_type: str  # CREATE_POST, REPLY, QUOTE_POST, COUNTER_ARGUMENT, ...
     action_args: Dict[str, Any] = field(default_factory=dict)
     result: Optional[str] = None
     success: bool = True
+    # Unique id of this post, used to build conversation threads.
+    post_id: str = ""
+    # Post this action answers to. Empty for a standalone post.
+    parent_post_id: str = ""
+    # How this post relates to the conversation.
+    interaction_type: str = "CREATE_POST"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -73,6 +79,9 @@ class AgentAction:
             "action_args": self.action_args,
             "result": self.result,
             "success": self.success,
+            "post_id": self.post_id,
+            "parent_post_id": self.parent_post_id,
+            "interaction_type": self.interaction_type,
         }
 
 
@@ -212,6 +221,8 @@ class SimulationRunner:
     _manual_stop_requests: set[str] = set()
     _state_guard = threading.Lock()
     _active_loops: Dict[str, asyncio.AbstractEventLoop] = {}
+    # Monotonic counter used to build unique post ids per simulation.
+    _post_counters: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -699,9 +710,12 @@ class SimulationRunner:
         # reasonable time while still exercising every agent over time.
         max_active = min(
             len(agents),
-            max(Config.LLM_MAX_CONCURRENT * 3, Config.LLM_MAX_CONCURRENT),
+            max(Config.SIMULATION_MAX_ACTIVE_PER_ROUND, Config.LLM_MAX_CONCURRENT),
             max(agents_per_hour_max, 1),
         )
+
+        # Rolling window of the conversation so agents can answer each other.
+        conversation: List[Dict[str, Any]] = []
 
         start_hour = 8
         for round_num in range(1, total_rounds + 1):
@@ -745,6 +759,11 @@ class SimulationRunner:
                 off_peak_hours=off_peak_hours,
                 max_active=max_active,
             )
+            # Stance lookup, used to decide if an agent agrees or disagrees.
+            stance_by_agent = {
+                int(item.get("id", -1)): str(item.get("stance") or "neutral")
+                for item in active_agents
+            }
 
             all_actions: List[AgentAction] = []
             chunk_size = max(1, Config.LLM_MAX_CONCURRENT)
@@ -760,10 +779,19 @@ class SimulationRunner:
                     async with semaphore:
                         if cls.is_stop_requested(simulation_id):
                             return None
-                        action_type = (
-                            "CREATE_POST" if platform_name == "twitter"
-                            else random.choice(["CREATE_POST", "CREATE_COMMENT"])
+
+                        # Decide whether this agent starts a new thread or
+                        # answers somebody else.
+                        interaction_type, parent_post = cls._plan_interaction(
+                            agent=agent,
+                            conversation=conversation,
+                            platform=platform_name,
                         )
+                        action_type = interaction_type
+                        parent_post_id = (
+                            parent_post.get("post_id", "") if parent_post else ""
+                        )
+
                         prompt = cls._build_action_prompt(
                             agent=agent,
                             config=config,
@@ -771,6 +799,10 @@ class SimulationRunner:
                             round_num=round_num,
                             simulated_hour=simulated_hour,
                             shock_text=shock_text,
+                            interaction_type=interaction_type,
+                            parent_post=parent_post,
+                            conversation=conversation,
+                            total_rounds=total_rounds,
                         )
                         try:
                             text = await asyncio.to_thread(
@@ -803,9 +835,14 @@ class SimulationRunner:
                                 action_args={
                                     "content": text,
                                     "simulated_hour": simulated_hour,
+                                    "interaction_type": interaction_type,
+                                    "parent_post_id": parent_post_id,
                                 },
                                 result=text,
                                 success=True,
+                                post_id=cls._next_post_id(simulation_id, round_num),
+                                parent_post_id=parent_post_id,
+                                interaction_type=interaction_type,
                             )
                         except Exception as exc:
                             logger.warning(
@@ -822,6 +859,9 @@ class SimulationRunner:
                                 action_args={},
                                 result=f"Error: {exc}",
                                 success=False,
+                                post_id=cls._next_post_id(simulation_id, round_num),
+                                parent_post_id=parent_post_id,
+                                interaction_type=interaction_type,
                             )
 
                 results = await asyncio.gather(*(run_one(a) for a in chunk))
@@ -832,12 +872,33 @@ class SimulationRunner:
                     state.add_action(action)
                     round_summary.actions.append(action)
                     round_summary.active_agents.append(action.agent_id)
+
+                    if action.success and action.result:
+                        # Feed the post into the rolling conversation window
+                        # so the next agents can answer it.
+                        conversation.append({
+                            "post_id": action.post_id,
+                            "parent_post_id": action.parent_post_id,
+                            "agent_id": action.agent_id,
+                            "agent_name": action.agent_name,
+                            "platform": action.platform,
+                            "round_num": action.round_num,
+                            "interaction_type": action.interaction_type,
+                            "stance": stance_by_agent.get(action.agent_id, "neutral"),
+                            "content": action.result,
+                        })
+                        if len(conversation) > cls.MAX_CONVERSATION_POSTS:
+                            del conversation[: len(conversation) - cls.MAX_CONVERSATION_POSTS]
+
                     await asyncio.to_thread(
                         memory.add_interaction,
                         action.round_num,
                         str(action.agent_id),
                         action.action_type,
                         action.result or "",
+                        parent_post_id=action.parent_post_id,
+                        interaction_type=action.interaction_type,
+                        post_id=action.post_id,
                     )
 
                 # Chunk pacing keeps the free NVIDIA NIM tier happy.
@@ -961,6 +1022,13 @@ class SimulationRunner:
                     "bio": profile.get("bio") or profile.get("description") or "",
                     "persona": profile.get("persona") or profile.get("bio") or "",
                     "platforms": ["twitter", "reddit"],
+                    # Simulation behaviour carried by the persona.
+                    "profile_stance": profile.get("stance") or "neutral",
+                    "profile_platform": profile.get("platform") or "",
+                    "profile_tone": profile.get("tone") or "neutral",
+                    "profile_perspective": profile.get("perspective") or "",
+                    "profile_region": profile.get("region") or "",
+                    "profile_profession": profile.get("profession") or "",
                 }
             )
         return agents
@@ -987,8 +1055,15 @@ class SimulationRunner:
                     "active_hours": cfg.get("active_hours")
                     or list(range(8, 23)),
                     "influence_weight": float(cfg.get("influence_weight", 1.0) or 1.0),
-                    "stance": cfg.get("stance", "neutral"),
+                    "stance": cfg.get("stance")
+                    or agent.get("profile_stance")
+                    or "neutral",
                     "entity_type": cfg.get("entity_type", "Entity"),
+                    # Behaviour fields of the persona, used by the prompt.
+                    "tone": agent.get("profile_tone") or "neutral",
+                    "perspective": agent.get("profile_perspective") or "",
+                    "region": agent.get("profile_region") or "",
+                    "profession": agent.get("profile_profession") or "",
                 }
             )
             merged.append(item)
@@ -1042,6 +1117,66 @@ class SimulationRunner:
                 selected.append({"platform": platform, **agent})
         return selected
 
+    # ------------------------------------------------------------------
+    # Two-way conversation helpers
+    # ------------------------------------------------------------------
+
+    # How many earlier posts stay visible to the agents.
+    MAX_CONVERSATION_POSTS = 40
+
+    @classmethod
+    def _next_post_id(cls, simulation_id: str, round_num: int) -> str:
+        """Build a unique id for a post inside a simulation."""
+        return f"{simulation_id}_r{round_num}_p{cls._post_counter(simulation_id)}"
+
+    @classmethod
+    def _post_counter(cls, simulation_id: str) -> int:
+        """Monotonic counter of the posts of one simulation."""
+        with cls._state_guard:
+            value = cls._post_counters.get(simulation_id, 0) + 1
+            cls._post_counters[simulation_id] = value
+            return value
+
+    @classmethod
+    def _plan_interaction(
+        cls,
+        agent: Dict[str, Any],
+        conversation: List[Dict[str, Any]],
+        platform: str,
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        """Decide what this agent does: start a thread or answer someone.
+
+        Returns the interaction type and the post it answers to (or None).
+        """
+        agent_id = int(agent.get("id", -1))
+        candidates = [
+            post
+            for post in conversation
+            if int(post.get("agent_id", -1)) != agent_id
+        ]
+
+        # No history yet, or the agent ignores the discussion: start a post.
+        if not candidates or random.random() > Config.SIMULATION_REPLY_RATIO:
+            if platform == "reddit" and random.random() < 0.3:
+                return "CREATE_COMMENT", None
+            return "CREATE_POST", None
+
+        parent_post = random.choice(candidates)
+        agent_stance = str(agent.get("stance") or "neutral").lower()
+        parent_stance = str(parent_post.get("stance") or "neutral").lower()
+
+        if agent_stance and parent_stance and agent_stance != parent_stance:
+            # Different point of view: push back.
+            if random.random() < 0.6:
+                return "COUNTER_ARGUMENT", parent_post
+            return "REPLY", parent_post
+
+        if random.random() < 0.2:
+            return "QUESTION", parent_post
+        if random.random() < 0.5:
+            return "AGREEMENT", parent_post
+        return "REPLY", parent_post
+
     @classmethod
     def _build_action_prompt(
         cls,
@@ -1051,32 +1186,103 @@ class SimulationRunner:
         round_num: int,
         simulated_hour: int,
         shock_text: str,
+        interaction_type: str = "CREATE_POST",
+        parent_post: Optional[Dict[str, Any]] = None,
+        conversation: Optional[List[Dict[str, Any]]] = None,
+        total_rounds: int = 0,
     ) -> str:
         persona = str(agent.get("persona") or agent.get("bio") or "")[:1500]
         stance = agent.get("stance", "neutral")
         requirement = config.get("simulation_requirement", "")
         hot_topics = (config.get("event_config") or {}).get("hot_topics") or []
         narrative = (config.get("event_config") or {}).get("narrative_direction") or ""
+        tone = agent.get("tone", "neutral")
+        perspective = agent.get("perspective", "")
+        region = agent.get("region", "")
+        profession = agent.get("profession", "")
+
+        # The topic is derived from the simulation requirement, so the prompt
+        # works for any uploaded document.
+        topic = str(requirement).strip() or "the current topic"
 
         lines = [
-            f"Platform: {platform}",
-            f"Round: {round_num} | Simulated hour: {simulated_hour}:00",
-            f"Your name: {agent.get('name')}",
-            f"Your stance on the topic: {stance}",
-            f"Simulation topic: {requirement}",
+            f"You are simulating a realistic social media ecosystem around this topic: {topic}",
+            "",
+            f"Based on the ontology provided, generate a response from {agent.get('name')} who is:",
+            f"- Bio: {str(agent.get('bio') or persona)[:400]}",
+            f"- Stance: {stance} (supportive/opposing/neutral/observer)",
+            f"- Platform: {platform}",
+            f"- Tone: {tone}",
         ]
+        if profession:
+            lines.append(f"- Profession: {profession}")
+        if region:
+            lines.append(f"- Region: {region}")
+        if perspective:
+            lines.append(f"- Perspective: {perspective}")
+
+        # Previous conversation so the agent can answer instead of starting
+        # a new monologue every time.
+        recent = list(conversation or [])[-max(1, Config.SIMULATION_CONTEXT_POSTS):]
+        if recent:
+            lines.append("")
+            lines.append("PREVIOUS CONVERSATION CONTEXT (last 5 posts):")
+            for post in recent:
+                lines.append(
+                    f"- [{post.get('agent_name')}] ({post.get('interaction_type')}): "
+                    f"{str(post.get('content') or '')[:220]}"
+                )
+
+        if parent_post:
+            lines.append("")
+            lines.append("POST YOU ARE ANSWERING:")
+            lines.append(
+                f"- [{parent_post.get('agent_name')}] ({parent_post.get('interaction_type')}): "
+                f"{str(parent_post.get('content') or '')[:400]}"
+            )
+
         if hot_topics:
+            lines.append("")
             lines.append(f"Hot topics: {', '.join(str(t) for t in hot_topics[:8])}")
         if narrative:
             lines.append(f"Narrative direction: {narrative}")
         if shock_text:
+            lines.append("")
             lines.append(shock_text)
+
+        lines.append("")
         lines.append(f"Your persona:\n{persona}")
-        lines.append(
-            "Write your next social media post as this character. "
-            "Do not use hashtags more than once. Do not mention being an AI. "
-            "Keep it under 60 words."
-        )
+        lines.append("")
+
+        instruction = {
+            "REPLY": "You are replying to the post above. Address that person directly.",
+            "QUOTE_POST": "You are quoting the post above and adding your own take on it.",
+            "COUNTER_ARGUMENT": (
+                "You disagree with the post above. Write a clear counter-argument "
+                "that challenges their point."
+            ),
+            "AGREEMENT": (
+                "You agree with the post above. Amplify it with your own perspective "
+                "and a new detail."
+            ),
+            "QUESTION": "You have a question about the post above. Ask it directly.",
+            "CREATE_COMMENT": "You are commenting on the discussion above. Add to it.",
+        }.get(interaction_type, "")
+
+        lines.append("Your task: Write a realistic social media post as this character.")
+        if instruction:
+            lines.append(f"- {instruction}")
+        lines.extend([
+            "- If someone mentioned you or your viewpoint, REPLY to them directly",
+            "- If you disagree with a previous post, write a counter-argument",
+            "- If you agree, amplify with your own perspective",
+            "- Stay in character completely",
+            "- Use natural language appropriate for the platform",
+            "- Max 60 words",
+            f"- Round {round_num}/{total_rounds or round_num}, Simulated Hour {simulated_hour}:00",
+        ])
+        lines.append("")
+        lines.append("Output ONLY the post content, nothing else.")
         return "\n".join(lines)
 
     @classmethod

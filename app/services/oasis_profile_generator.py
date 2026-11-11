@@ -102,6 +102,18 @@ class OasisAgentProfile:
     country: Optional[str] = None
     profession: Optional[str] = None
     interested_topics: List[str] = field(default_factory=list)
+
+    # ===== Simulation behaviour =====
+    # Stance towards the simulated topic: supportive / opposing / neutral / observer
+    stance: str = "neutral"
+    # Preferred platform for this persona: twitter / reddit / linkedin / facebook / blog
+    platform: str = "twitter"
+    # Typical tone of voice, used to keep the writing style consistent
+    tone: str = "neutral"
+    # The point of view this persona brings to the discussion
+    perspective: str = ""
+    # Region / location the persona is based in
+    region: str = ""
     
     # Source entity information
     source_entity_uuid: Optional[str] = None
@@ -120,6 +132,11 @@ class OasisAgentProfile:
         self.gender = _coerce_to_str(self.gender) or None
         self.mbti = _coerce_to_str(self.mbti) or None
         self.interested_topics = _coerce_to_str_list(self.interested_topics)
+        self.stance = _coerce_to_str(self.stance) or "neutral"
+        self.platform = _coerce_to_str(self.platform) or "twitter"
+        self.tone = _coerce_to_str(self.tone) or "neutral"
+        self.perspective = _coerce_to_str(self.perspective) or ""
+        self.region = _coerce_to_str(self.region) or ""
 
     def to_reddit_format(self) -> Dict[str, Any]:
         """convert for Reddit platform format"""
@@ -146,6 +163,15 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+        
+        # Simulation behaviour fields (stance, platform, tone, perspective)
+        profile["stance"] = self.stance
+        profile["platform"] = self.platform
+        profile["tone"] = self.tone
+        if self.perspective:
+            profile["perspective"] = self.perspective
+        if self.region:
+            profile["region"] = self.region
         
         return profile
     
@@ -176,6 +202,15 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+        
+        # Simulation behaviour fields (stance, platform, tone, perspective)
+        profile["stance"] = self.stance
+        profile["platform"] = self.platform
+        profile["tone"] = self.tone
+        if self.perspective:
+            profile["perspective"] = self.perspective
+        if self.region:
+            profile["region"] = self.region
         
         return profile
     
@@ -329,8 +364,29 @@ class OasisProfileGenerator:
             interested_topics=profile_data.get("interested_topics", []),
             source_entity_uuid=entity_uuid(entity),
             source_entity_type=entity_type,
+            stance=str(attributes.get("stance") or entity.get("stance") or "neutral"),
+            platform=str(attributes.get("platform") or "twitter"),
+            tone=str(attributes.get("tone") or "neutral"),
+            perspective=str(attributes.get("perspective") or ""),
+            region=str(attributes.get("region") or ""),
         )
     
+    def _simulation_behaviour(self, entity_attributes: Dict[str, Any]) -> Dict[str, str]:
+        """Resolve the simulation behaviour values of a cast member."""
+        attributes = entity_attributes or {}
+        return {
+            "stance": str(attributes.get("stance") or "neutral"),
+            "platform": str(attributes.get("platform") or "twitter"),
+            "tone": str(attributes.get("tone") or "neutral"),
+            "profession": str(attributes.get("profession") or "participant"),
+            "region": str(attributes.get("region") or "unspecified"),
+            "age_band": str(attributes.get("age_band") or "25-34"),
+            "perspective": str(
+                attributes.get("perspective")
+                or "A regular participant who reacts to what the others say."
+            ),
+        }
+
     def _generate_username(self, name: str) -> str:
         """generate username"""
         # remove special characters，convert for lowercase
@@ -691,6 +747,7 @@ class OasisProfileGenerator:
         
         attrs_str = json.dumps(entity_attributes, ensure_ascii=False) if entity_attributes else "none"
         context_str = context[:3000] if context else "No additional context"
+        behaviour = self._simulation_behaviour(entity_attributes)
         
         return f"""Generate a detailed social media persona for the entity below, staying faithful to the available source material.
 
@@ -701,6 +758,15 @@ Entity attributes: {attrs_str}
 
 Context:
 {context_str}
+
+SIMULATION BEHAVIOUR (the simulation engine uses these, keep them consistent):
+- Stance towards the topic: {behaviour['stance']}
+- Home platform: {behaviour['platform']}
+- Typical tone of voice: {behaviour['tone']}
+- Profession: {behaviour['profession']}
+- Region: {behaviour['region']}
+- Age group: {behaviour['age_band']}
+- Unique perspective: {behaviour['perspective']}
 
 Return JSON with these fields:
 
@@ -726,6 +792,9 @@ Important:
 - {get_language_instruction()} (the gender field must stay in English: male/female)
 - Keep the content consistent with the entity information.
 - age must be a valid integer; gender must be "male" or "female".
+- The persona must sound like one specific person, not a generic archetype.
+- Stay inside the assigned stance, platform, tone and perspective: the
+  simulation depends on every persona being clearly distinct from the others.
 """
 
     def _build_group_persona_prompt(
@@ -740,6 +809,7 @@ Important:
         
         attrs_str = json.dumps(entity_attributes, ensure_ascii=False) if entity_attributes else "none"
         context_str = context[:3000] if context else "No additional context"
+        behaviour = self._simulation_behaviour(entity_attributes)
         
         return f"""Generate a detailed social media account persona for the organization or group below, staying faithful to the available source material.
 
@@ -750,6 +820,14 @@ Entity attributes: {attrs_str}
 
 Context:
 {context_str}
+
+SIMULATION BEHAVIOUR (the simulation engine uses these, keep them consistent):
+- Stance towards the topic: {behaviour['stance']}
+- Home platform: {behaviour['platform']}
+- Typical tone of voice: {behaviour['tone']}
+- Organisation focus: {behaviour['profession']}
+- Region: {behaviour['region']}
+- Unique perspective: {behaviour['perspective']}
 
 Return JSON with these fields:
 
@@ -774,7 +852,9 @@ Important:
 - persona must be one coherent paragraph without raw newlines.
 - {get_language_instruction()} (the gender field must stay in English: "other")
 - age must be the integer 30; gender must be the string "other".
-- The account's voice must match its identity."""
+- The account's voice must match its identity.
+- Stay inside the assigned stance, platform, tone and perspective: the
+  simulation depends on every account being clearly distinct from the others."""
     
     def _generate_profile_rule_based(
         self,
@@ -852,7 +932,265 @@ Important:
     def set_graph_id(self, graph_id: str):
         """settings graph ID used for Zep retrieve"""
         self.graph_id = graph_id
-    
+
+    # ------------------------------------------------------------------
+    # Cast expansion
+    # ------------------------------------------------------------------
+    # A knowledge graph usually yields only a handful of nodes. A believable
+    # social ecosystem needs a full cast, so the graph entities are turned
+    # into a diverse set of personas: different professions, demographics,
+    # stances, platforms and tones. Everything here is project agnostic, it
+    # only depends on the ontology types and the uploaded document.
+
+    CAST_FIRST_NAMES = [
+        "Amina", "Bruno", "Chen", "Dalia", "Elif", "Farid", "Grace", "Hassan",
+        "Ines", "Jonas", "Kaito", "Leila", "Mateo", "Nadia", "Omar", "Priya",
+        "Quinn", "Rosa", "Sven", "Tara", "Umar", "Vera", "Wei", "Ximena",
+        "Yara", "Zane", "Anika", "Bilal", "Carmen", "Diego", "Esra", "Felix",
+    ]
+
+    CAST_LAST_NAMES = [
+        "Ahmed", "Bergman", "Costa", "Dubois", "Evans", "Fontaine", "Garcia",
+        "Haddad", "Ibrahim", "Jansen", "Kowalski", "Lindqvist", "Moreau",
+        "Nakamura", "Okafor", "Petrov", "Quintero", "Rossi", "Silva", "Tanaka",
+        "Ubeda", "Vasquez", "Weber", "Xu", "Yilmaz", "Zhang", "Andersen", "Baker",
+        "Cruz", "Duarte", "Engel", "Fischer",
+    ]
+
+    CAST_PROFESSIONS = [
+        "student", "postgraduate researcher", "teacher", "journalist",
+        "policy analyst", "investor", "regulator", "industry analyst",
+        "software engineer", "product manager", "marketing lead", "NGO coordinator",
+        "union representative", "small business owner", "parent", "retiree",
+        "content creator", "independent blogger", "legal consultant",
+        "public health specialist", "economist", "urban planner", "activist",
+        "community organiser", "freelance designer", "supply chain manager",
+    ]
+
+    CAST_REGIONS = [
+        "Europe", "North America", "South America", "Middle East",
+        "South Asia", "East Asia", "Southeast Asia", "Africa",
+        "Northern Europe", "Southern Europe", "the Pacific", "the Balkans",
+    ]
+
+    CAST_AGE_BANDS = [
+        "18-24", "25-34", "35-44", "45-54", "55-64", "65+",
+    ]
+
+    CAST_TONES = [
+        "analytical", "emotional", "sarcastic", "measured", "outspoken",
+        "cautious", "enthusiastic", "dry and factual", "passionate",
+        "ironic", "reassuring", "blunt",
+    ]
+
+    CAST_PLATFORMS = ["twitter", "reddit", "linkedin", "facebook", "blog"]
+
+    # 30% supportive, 40% critical, 30% neutral/observer
+    CAST_STANCE_MIX = (
+        ["supportive"] * 30
+        + ["opposing"] * 40
+        + ["neutral"] * 30
+    )
+
+    @classmethod
+    def _stance_for_index(cls, index: int) -> str:
+        """Return the stance of a cast member (default mix)."""
+        mix = cls._shuffled_stance_mix()
+        return mix[index % len(mix)]
+
+    @classmethod
+    def _stance_mix_for_size(cls, size: int) -> List[str]:
+        """Build a stance mix with the exact 30/40/30 ratio for a cast size.
+
+        The mix is shuffled so the cast is not blocked by stance, but the
+        ratio stays exact whatever the number of personas is.
+        """
+        size = max(int(size), 0)
+        supportive = int(round(size * 0.3))
+        opposing = int(round(size * 0.4))
+        neutral = max(size - supportive - opposing, 0)
+        mix = (
+            ["supportive"] * supportive
+            + ["opposing"] * opposing
+            + ["neutral"] * neutral
+        )
+        random.Random(20260101).shuffle(mix)
+        return mix
+
+    @classmethod
+    def _shuffled_stance_mix(cls) -> List[str]:
+        """Deterministically shuffled stance mix."""
+        cached = getattr(cls, "_stance_mix_cache", None)
+        if cached is None:
+            cached = list(cls.CAST_STANCE_MIX)
+            random.Random(20260101).shuffle(cached)
+            cls._stance_mix_cache = cached
+        return cached
+
+    def expand_entity_cast(
+        self,
+        entities: List[Dict[str, Any]],
+        target_count: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Expand a small entity list into a large, diverse persona cast.
+
+        The original entities are kept (they carry the graph context) and
+        additional personas are derived from their types so the simulation
+        behaves like a real community instead of a handful of isolated
+        speakers.
+
+        Args:
+            entities: the entities extracted from the document.
+            target_count: how many personas the simulation should have.
+
+        Returns:
+            A new list of entities, each one annotated with a stance,
+            platform, tone, profession and perspective.
+        """
+        target = int(
+            target_count
+            if target_count is not None
+            else Config.SIMULATION_MIN_ENTITIES
+        )
+        target = max(target, len(entities))
+        target = min(target, Config.SIMULATION_MAX_ENTITIES)
+
+        cast: List[Dict[str, Any]] = []
+        used_names: set[str] = set()
+        # Exact 30/40/30 stance ratio for the size of the cast.
+        stance_mix = self._stance_mix_for_size(target)
+
+        for entity in entities:
+            cast.append(
+                self._annotate_cast_member(
+                    entity, len(cast), used_names, stance_mix
+                )
+            )
+
+        if not entities:
+            # No graph nodes at all: build the cast from generic roles.
+            for _ in range(target):
+                cast.append(
+                    self._synthetic_cast_member(
+                        len(cast), used_names, None, stance_mix
+                    )
+                )
+            return cast
+
+        index = 0
+        while len(cast) < target:
+            base = entities[index % len(entities)]
+            cast.append(
+                self._synthetic_cast_member(
+                    len(cast), used_names, base, stance_mix
+                )
+            )
+            index += 1
+
+        return cast
+
+    def _annotate_cast_member(
+        self,
+        entity: Dict[str, Any],
+        index: int,
+        used_names: set[str],
+        stance_mix: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Add the simulation behaviour fields to an existing entity."""
+        annotated = dict(entity)
+        attributes = dict(entity_attributes(entity) or {})
+        stance = (
+            stance_mix[index % len(stance_mix)]
+            if stance_mix
+            else self._stance_for_index(index)
+        )
+
+        attributes.setdefault("stance", stance)
+        attributes.setdefault("platform", self.CAST_PLATFORMS[index % len(self.CAST_PLATFORMS)])
+        attributes.setdefault("tone", self.CAST_TONES[index % len(self.CAST_TONES)])
+        attributes.setdefault("profession", self.CAST_PROFESSIONS[index % len(self.CAST_PROFESSIONS)])
+        attributes.setdefault("region", self.CAST_REGIONS[index % len(self.CAST_REGIONS)])
+        attributes.setdefault("age_band", self.CAST_AGE_BANDS[index % len(self.CAST_AGE_BANDS)])
+        attributes.setdefault(
+            "perspective",
+            f"A {attributes.get('profession', 'participant')} from "
+            f"{attributes.get('region', 'unspecified')} who reacts to what the "
+            f"others say.",
+        )
+        annotated["attributes"] = attributes
+        annotated["stance"] = stance
+        return annotated
+
+    def _synthetic_cast_member(
+        self,
+        index: int,
+        used_names: set[str],
+        base: Optional[Dict[str, Any]] = None,
+        stance_mix: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create one additional persona derived from an entity type."""
+        base_type = entity_type_of(base) if base else "Person"
+        base_summary = entity_summary(base) if base else ""
+
+        name = self._unique_cast_name(index, used_names)
+        profession = self.CAST_PROFESSIONS[index % len(self.CAST_PROFESSIONS)]
+        region = self.CAST_REGIONS[index % len(self.CAST_REGIONS)]
+        age_band = self.CAST_AGE_BANDS[index % len(self.CAST_AGE_BANDS)]
+        stance = (
+            stance_mix[index % len(stance_mix)]
+            if stance_mix
+            else self._stance_for_index(index)
+        )
+        platform = self.CAST_PLATFORMS[index % len(self.CAST_PLATFORMS)]
+        tone = self.CAST_TONES[index % len(self.CAST_TONES)]
+        perspective = (
+            f"A {profession} from {region} who looks at the topic from the "
+            f"point of view of a {age_band} {profession}."
+        )
+
+        attributes = {
+            "profession": profession,
+            "region": region,
+            "age_band": age_band,
+            "stance": stance,
+            "platform": platform,
+            "tone": tone,
+            "perspective": perspective,
+            "expanded": True,
+        }
+
+        summary = (
+            f"{name} is a {profession} based in {region} ({age_band}). "
+            f"{perspective}"
+        )
+        if base_summary:
+            summary = f"{summary} Connected to the topic through: {base_summary[:180]}"
+
+        return {
+            "uuid": f"cast_{name.lower().replace(' ', '_')}_{index}",
+            "name": name,
+            "type": base_type or "Person",
+            "labels": [base_type or "Person"],
+            "summary": summary,
+            "attributes": attributes,
+            "stance": stance,
+            "graph_id": (base or {}).get("graph_id"),
+        }
+
+    def _unique_cast_name(self, index: int, used_names: set[str]) -> str:
+        """Build a stable, unique display name for a cast member."""
+        first = self.CAST_FIRST_NAMES[index % len(self.CAST_FIRST_NAMES)]
+        last = self.CAST_LAST_NAMES[
+            (index // len(self.CAST_FIRST_NAMES)) % len(self.CAST_LAST_NAMES)
+        ]
+        name = f"{first} {last}"
+        suffix = 2
+        while name in used_names:
+            name = f"{first} {last} {suffix}"
+            suffix += 1
+        used_names.add(name)
+        return name
+
     def generate_profiles_from_entities(
         self,
         entities: List[Dict[str, Any]],

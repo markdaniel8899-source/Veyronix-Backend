@@ -67,6 +67,20 @@ class LocalMemory:
         """Create tables and indexes if they do not already exist."""
         conn = self._connect()
         try:
+            # Migrate databases created before the thread columns existed.
+            # This has to run before the schema script, because the index on
+            # parent_post_id needs the column to exist.
+            for ddl in (
+                "ALTER TABLE interactions ADD COLUMN parent_post_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE interactions ADD COLUMN interaction_type TEXT NOT NULL DEFAULT 'CREATE_POST'",
+                "ALTER TABLE interactions ADD COLUMN post_id TEXT NOT NULL DEFAULT ''",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    # The table is new or the column already exists.
+                    pass
+
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS agents (
@@ -81,6 +95,9 @@ class LocalMemory:
                     agent_id TEXT NOT NULL,
                     action TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    parent_post_id TEXT NOT NULL DEFAULT '',
+                    interaction_type TEXT NOT NULL DEFAULT 'CREATE_POST',
+                    post_id TEXT NOT NULL DEFAULT '',
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -111,6 +128,8 @@ class LocalMemory:
 
                 CREATE INDEX IF NOT EXISTS idx_interactions_round
                     ON interactions(round_num);
+                CREATE INDEX IF NOT EXISTS idx_interactions_parent
+                    ON interactions(parent_post_id);
                 CREATE INDEX IF NOT EXISTS idx_interactions_agent
                     ON interactions(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_market_shocks_simulation
@@ -451,16 +470,34 @@ class LocalMemory:
         agent_id: str,
         action: str,
         content: str,
+        parent_post_id: str = "",
+        interaction_type: str = "CREATE_POST",
+        post_id: str = "",
     ) -> int:
-        """Insert a new interaction record and return its row ID."""
+        """Insert a new interaction record and return its row ID.
+
+        ``parent_post_id`` links a post to the one it answers, which is what
+        builds the conversation threads.
+        """
         conn = self._connect()
         try:
             cur = conn.execute(
                 """
-                INSERT INTO interactions (round_num, agent_id, action, content)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO interactions (
+                    round_num, agent_id, action, content,
+                    parent_post_id, interaction_type, post_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (round_num, agent_id, action, content),
+                (
+                    round_num,
+                    agent_id,
+                    action,
+                    content,
+                    parent_post_id or "",
+                    interaction_type or "CREATE_POST",
+                    post_id or "",
+                ),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -477,7 +514,8 @@ class LocalMemory:
         conn = self._connect()
         try:
             query = (
-                "SELECT id, round_num, agent_id, action, content, timestamp "
+                "SELECT id, round_num, agent_id, action, content, "
+                "parent_post_id, interaction_type, post_id, timestamp "
                 "FROM interactions"
             )
             params: List[Any] = []
@@ -504,6 +542,9 @@ class LocalMemory:
                     "agent_id": row["agent_id"],
                     "action": row["action"],
                     "content": row["content"],
+                    "parent_post_id": row["parent_post_id"],
+                    "interaction_type": row["interaction_type"],
+                    "post_id": row["post_id"],
                     "timestamp": row["timestamp"],
                 }
                 for row in cur.fetchall()
