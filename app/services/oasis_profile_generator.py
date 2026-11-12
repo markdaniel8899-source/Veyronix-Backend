@@ -787,7 +787,7 @@ Return JSON with these fields:
 8. interested_topics: array of topics
 
 Important:
-- STRICT RULE: You must ONLY generate personas based on the names, roles, organizations, and groups explicitly mentioned in the provided document. DO NOT invent random names, nationalities, or unrelated topics (like 'Atlas' or 'South American parents'). If the document is about Wuhan University, all personas must be related to that specific context (e.g., Students, Alumni, WHU Administration, specific media outlets mentioned).
+- STRICT RULE: You must ONLY generate personas based on the names, roles, organizations, and groups explicitly mentioned in the provided document. DO NOT invent random names, nationalities, or unrelated topics. All personas must be related to the specific context of the document.
 - All field values must be strings or numbers, with no raw newlines.
 - persona must be one coherent paragraph.
 - {get_language_instruction()} (the gender field must stay in English: male/female)
@@ -849,7 +849,7 @@ Return JSON with these fields:
 8. interested_topics: array of focus areas
 
 Important:
-- STRICT RULE: You must ONLY generate personas based on the names, roles, organizations, and groups explicitly mentioned in the provided document. DO NOT invent random names, nationalities, or unrelated topics (like 'Atlas' or 'South American parents'). If the document is about Wuhan University, all personas must be related to that specific context (e.g., Students, Alumni, WHU Administration, specific media outlets mentioned).
+- STRICT RULE: You must ONLY generate personas based on the names, roles, organizations, and groups explicitly mentioned in the provided document. DO NOT invent random names, nationalities, or unrelated topics. All personas must be related to the specific context of the document.
 - All field values must be strings or numbers. Null values are not allowed.
 - persona must be one coherent paragraph without raw newlines.
 - {get_language_instruction()} (the gender field must stay in English: "other")
