@@ -325,7 +325,16 @@ class SimulationManager:
                 # ontology type names differ from the stored ones.
                 if filtered_entities:
                     entities = filtered_entities
-            
+
+            # Keep the most connected entities, then cap the cast.
+            entities.sort(
+                key=lambda entity: len(
+                    entity.get("related_edges") or []
+                ),
+                reverse=True,
+            )
+            entities = entities[:Config.SIMULATION_MAX_ENTITIES]
+
             entity_types = sorted({get_entity_type(e) for e in entities})
             
             # The guard stays before the cast expansion: an empty graph must

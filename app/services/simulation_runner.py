@@ -705,17 +705,27 @@ class SimulationRunner:
         time_config = config.get("time_config") or {}
         peak_hours = set(time_config.get("peak_hours") or [19, 20, 21, 22])
         off_peak_hours = set(time_config.get("off_peak_hours") or [0, 1, 2, 3, 4, 5])
-        agents_per_hour_max = int(time_config.get("agents_per_hour_max", 20) or 20)
         # Keep each round bounded so a 10 RPM free tier can finish in
         # reasonable time while still exercising every agent over time.
         max_active = min(
             len(agents),
-            max(Config.SIMULATION_MAX_ACTIVE_PER_ROUND, Config.LLM_MAX_CONCURRENT),
-            max(agents_per_hour_max, 1),
+            Config.SIMULATION_MAX_ACTIVE_PER_ROUND,
         )
 
         # Rolling window of the conversation so agents can answer each other.
         conversation: List[Dict[str, Any]] = []
+
+        # Seed the conversation with the event's initial posts so round 1
+        # already has a shared event that agents can react to.
+        seeded_actions = cls._seed_initial_posts(
+            simulation_id, config, agents, conversation, platforms
+        )
+        if seeded_actions:
+            for action in seeded_actions:
+                state.add_action(action)
+            await asyncio.to_thread(
+                cls._append_actions, simulation_id, seeded_actions
+            )
 
         start_hour = 8
         for round_num in range(1, total_rounds + 1):
@@ -775,22 +785,55 @@ class SimulationRunner:
 
                 async def run_one(agent: Dict[str, Any]) -> Optional[AgentAction]:
                     platform_name = agent["platform"]
+                    if cls.is_stop_requested(simulation_id):
+                        return None
+
+                    platform_conversation = [
+                        post for post in conversation
+                        if post.get("platform") == platform_name
+                    ]
+
+                    interaction_type, parent_post = cls._plan_interaction(
+                        agent=agent,
+                        conversation=platform_conversation,
+                        platform=platform_name,
+                    )
+                    action_type = cls._action_type_for(interaction_type)
+                    parent_post_id = (
+                        parent_post.get("post_id", "")
+                        if parent_post
+                        else ""
+                    )
+
+                    # Likes, dislikes, upvotes, downvotes and reposts do not
+                    # need an LLM call, so they are not rate-limited.
+                    if action_type in {
+                        "LIKE_POST", "DISLIKE_POST",
+                        "UPVOTE_POST", "DOWNVOTE_POST", "REPOST",
+                    }:
+                        return AgentAction(
+                            round_num=round_num,
+                            timestamp=datetime.now().isoformat(),
+                            platform=platform_name,
+                            agent_id=int(agent["id"]),
+                            agent_name=str(agent["name"]),
+                            action_type=action_type,
+                            action_args=cls._engagement_args(
+                                action_type, parent_post
+                            ),
+                            result="",
+                            success=True,
+                            post_id=cls._next_post_id(
+                                simulation_id, round_num
+                            ),
+                            parent_post_id=parent_post_id,
+                            interaction_type=interaction_type,
+                        )
+
                     await limiter.acquire()
                     async with semaphore:
                         if cls.is_stop_requested(simulation_id):
                             return None
-
-                        # Decide whether this agent starts a new thread or
-                        # answers somebody else.
-                        interaction_type, parent_post = cls._plan_interaction(
-                            agent=agent,
-                            conversation=conversation,
-                            platform=platform_name,
-                        )
-                        action_type = interaction_type
-                        parent_post_id = (
-                            parent_post.get("post_id", "") if parent_post else ""
-                        )
 
                         prompt = cls._build_action_prompt(
                             agent=agent,
@@ -801,7 +844,7 @@ class SimulationRunner:
                             shock_text=shock_text,
                             interaction_type=interaction_type,
                             parent_post=parent_post,
-                            conversation=conversation,
+                            conversation=platform_conversation,
                             total_rounds=total_rounds,
                         )
                         try:
@@ -811,16 +854,18 @@ class SimulationRunner:
                                     {
                                         "role": "system",
                                         "content": (
-                                            "You are a social media simulation agent. "
-                                            "Stay fully in character. Write one short, "
-                                            "realistic social media post (max 2 sentences). "
-                                            "Reply in English or Roman Urdu only."
+                                            "You are a social media simulation "
+                                            "agent. Stay fully in character. "
+                                            "Write one short, realistic social "
+                                            "media post or comment (max 3 "
+                                            "sentences). Use the same language "
+                                            "as the source document."
                                         ),
                                     },
                                     {"role": "user", "content": prompt},
                                 ],
                                 temperature=0.85,
-                                max_tokens=160,
+                                max_tokens=220,
                             )
                             text = (text or "").strip()
                             if not text:
@@ -832,12 +877,13 @@ class SimulationRunner:
                                 agent_id=int(agent["id"]),
                                 agent_name=str(agent["name"]),
                                 action_type=action_type,
-                                action_args={
-                                    "content": text,
-                                    "simulated_hour": simulated_hour,
-                                    "interaction_type": interaction_type,
-                                    "parent_post_id": parent_post_id,
-                                },
+                                action_args=cls._content_action_args(
+                                    action_type=action_type,
+                                    interaction_type=interaction_type,
+                                    text=text,
+                                    parent_post=parent_post,
+                                    simulated_hour=simulated_hour,
+                                ),
                                 result=text,
                                 success=True,
                                 post_id=cls._next_post_id(simulation_id, round_num),
@@ -904,6 +950,24 @@ class SimulationRunner:
                 # Chunk pacing keeps the free NVIDIA NIM tier happy.
                 if chunk_start + chunk_size < len(active_agents):
                     await asyncio.sleep(6)
+
+            if Config.SIMULATION_ENGAGEMENT_ENABLED:
+                content_actions = [
+                    action for action in all_actions
+                    if action.success
+                    and action.action_type in {
+                        "CREATE_POST", "CREATE_COMMENT", "QUOTE_POST",
+                    }
+                ]
+                for action in cls._build_engagement_actions(
+                    simulation_id=simulation_id,
+                    agents=agents,
+                    content_actions=content_actions,
+                    round_num=round_num,
+                ):
+                    all_actions.append(action)
+                    state.add_action(action)
+                    round_summary.actions.append(action)
 
             round_summary.end_time = datetime.now().isoformat()
             round_summary.twitter_actions = sum(
@@ -1122,7 +1186,7 @@ class SimulationRunner:
     # ------------------------------------------------------------------
 
     # How many earlier posts stay visible to the agents.
-    MAX_CONVERSATION_POSTS = 40
+    MAX_CONVERSATION_POSTS = 80
 
     @classmethod
     def _next_post_id(cls, simulation_id: str, round_num: int) -> str:
@@ -1144,38 +1208,319 @@ class SimulationRunner:
         conversation: List[Dict[str, Any]],
         platform: str,
     ) -> tuple[str, Optional[Dict[str, Any]]]:
-        """Decide what this agent does: start a thread or answer someone.
-
-        Returns the interaction type and the post it answers to (or None).
-        """
+        """Choose an action that guarantees posts, replies and engagement."""
         agent_id = int(agent.get("id", -1))
         candidates = [
             post
             for post in conversation
             if int(post.get("agent_id", -1)) != agent_id
+            and post.get("platform") == platform
+            and post.get("content")
         ]
 
-        # No history yet, or the agent ignores the discussion: start a post.
-        if not candidates or random.random() > Config.SIMULATION_REPLY_RATIO:
-            if platform == "reddit" and random.random() < 0.3:
-                return "CREATE_COMMENT", None
+        if not candidates:
             return "CREATE_POST", None
 
-        parent_post = random.choice(candidates)
         agent_stance = str(agent.get("stance") or "neutral").lower()
+        parent_post = random.choice(candidates)
         parent_stance = str(parent_post.get("stance") or "neutral").lower()
+        agrees = (
+            agent_stance == parent_stance
+            or agent_stance == "neutral"
+            or parent_stance == "neutral"
+        )
 
-        if agent_stance and parent_stance and agent_stance != parent_stance:
-            # Different point of view: push back.
-            if random.random() < 0.6:
+        # 18% like/dislike, 10% repost. These need no LLM call and ensure
+        # every thread receives visible engagement.
+        roll = random.random()
+        if roll < 0.18:
+            if platform == "reddit":
+                return (
+                    "UPVOTE_POST" if agrees else "DOWNVOTE_POST"
+                ), parent_post
+            return (
+                "LIKE_POST" if agrees else "DISLIKE_POST"
+            ), parent_post
+
+        if roll < 0.28 and agrees:
+            return "REPOST", parent_post
+
+        # 60-70% of the remaining actions answer an existing post.
+        if random.random() > Config.SIMULATION_REPLY_RATIO:
+            return "CREATE_POST", None
+
+        if random.random() < 0.15:
+            return "QUOTE_POST", parent_post
+
+        if not agrees:
+            if random.random() < 0.70:
                 return "COUNTER_ARGUMENT", parent_post
-            return "REPLY", parent_post
-
-        if random.random() < 0.2:
             return "QUESTION", parent_post
-        if random.random() < 0.5:
+
+        if random.random() < 0.25:
+            return "QUESTION", parent_post
+        if random.random() < 0.55:
             return "AGREEMENT", parent_post
         return "REPLY", parent_post
+
+    @classmethod
+    def _action_type_for(cls, interaction_type: str) -> str:
+        """Map semantic interactions to the action types the UI renders."""
+        if interaction_type in {
+            "REPLY", "COUNTER_ARGUMENT", "AGREEMENT",
+            "QUESTION", "CREATE_COMMENT",
+        }:
+            return "CREATE_COMMENT"
+        if interaction_type in {
+            "CREATE_POST", "QUOTE_POST", "REPOST",
+            "LIKE_POST", "DISLIKE_POST",
+            "UPVOTE_POST", "DOWNVOTE_POST",
+        }:
+            return interaction_type
+        return "CREATE_POST"
+
+    @classmethod
+    def _engagement_args(
+        cls,
+        action_type: str,
+        parent_post: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        content = str((parent_post or {}).get("content") or "")
+        author = str((parent_post or {}).get("agent_name") or "User")
+        post_id = str((parent_post or {}).get("post_id") or "")
+        return {
+            "post_id": post_id,
+            "target_post_id": post_id,
+            "post_author_name": author,
+            "post_content": content[:500],
+            "original_author_name": author,
+            "original_content": content[:500],
+        }
+
+    @classmethod
+    def _content_action_args(
+        cls,
+        action_type: str,
+        interaction_type: str,
+        text: str,
+        parent_post: Optional[Dict[str, Any]],
+        simulated_hour: int,
+    ) -> Dict[str, Any]:
+        parent_content = str((parent_post or {}).get("content") or "")
+        parent_author = str((parent_post or {}).get("agent_name") or "")
+        parent_id = str((parent_post or {}).get("post_id") or "")
+
+        args = {
+            "content": text,
+            "simulated_hour": simulated_hour,
+            "interaction_type": interaction_type,
+            "parent_post_id": parent_id,
+            "post_id": parent_id,
+            "post_author_name": parent_author,
+            "post_content": parent_content[:500],
+        }
+        if action_type == "QUOTE_POST":
+            args["quote_content"] = text
+            args["original_author_name"] = parent_author
+            args["original_content"] = parent_content[:500]
+        return args
+
+    @classmethod
+    def _seed_initial_posts(
+        cls,
+        simulation_id: str,
+        config: Dict[str, Any],
+        agents: List[Dict[str, Any]],
+        conversation: List[Dict[str, Any]],
+        platforms: List[str],
+    ) -> List[AgentAction]:
+        initial = (config.get("event_config") or {}).get(
+            "initial_posts"
+        ) or []
+        if not initial or not agents:
+            return []
+
+        by_id = {}
+        for agent in agents:
+            try:
+                by_id[int(agent["id"])] = agent
+            except (TypeError, ValueError):
+                continue
+
+        default_platform = platforms[0] if platforms else "twitter"
+        actions: List[AgentAction] = []
+
+        for post in initial:
+            content = str(post.get("content") or "").strip()
+            if not content:
+                continue
+
+            agent_id = post.get("poster_agent_id")
+            try:
+                agent = by_id.get(int(agent_id))
+            except (TypeError, ValueError):
+                agent = None
+            if agent is None:
+                agent = random.choice(agents)
+
+            platform = str(agent.get("platform") or default_platform)
+            if platform not in platforms:
+                platform = default_platform
+
+            action = AgentAction(
+                round_num=0,
+                timestamp=datetime.now().isoformat(),
+                platform=platform,
+                agent_id=int(agent["id"]),
+                agent_name=str(agent["name"]),
+                action_type="CREATE_POST",
+                action_args={
+                    "content": content,
+                    "simulated_hour": 8,
+                    "interaction_type": "CREATE_POST",
+                    "parent_post_id": "",
+                },
+                result=content,
+                success=True,
+                post_id=cls._next_post_id(simulation_id, 0),
+                parent_post_id="",
+                interaction_type="CREATE_POST",
+            )
+            actions.append(action)
+            conversation.append({
+                "post_id": action.post_id,
+                "parent_post_id": "",
+                "agent_id": action.agent_id,
+                "agent_name": action.agent_name,
+                "platform": action.platform,
+                "round_num": 0,
+                "interaction_type": "CREATE_POST",
+                "stance": str(agent.get("stance") or "neutral"),
+                "content": content,
+            })
+
+        return actions
+
+    @classmethod
+    def _build_engagement_actions(
+        cls,
+        simulation_id: str,
+        agents: List[Dict[str, Any]],
+        content_actions: List[AgentAction],
+        round_num: int,
+    ) -> List[AgentAction]:
+        if not content_actions or len(agents) < 2:
+            return []
+
+        by_stance: Dict[str, List[Dict[str, Any]]] = {}
+        for agent in agents:
+            key = str(agent.get("stance") or "neutral").lower()
+            by_stance.setdefault(key, []).append(agent)
+
+        actions: List[AgentAction] = []
+        for post in content_actions:
+            author = next(
+                (
+                    agent for agent in agents
+                    if int(agent.get("id", -1)) == int(post.agent_id)
+                ),
+                None,
+            )
+            post_stance = str(
+                (author or {}).get("stance") or "neutral"
+            ).lower()
+
+            same = [
+                agent for agent in by_stance.get(post_stance, [])
+                if int(agent["id"]) != int(post.agent_id)
+            ]
+            opposite_stance = (
+                "opposing" if post_stance == "supportive" else "supportive"
+            )
+            opposite = [
+                agent for agent in by_stance.get(opposite_stance, [])
+                if int(agent["id"]) != int(post.agent_id)
+            ]
+            neutral = [
+                agent for agent in by_stance.get("neutral", [])
+                if int(agent["id"]) != int(post.agent_id)
+            ]
+
+            positive = (
+                "LIKE_POST" if post.platform == "twitter" else "UPVOTE_POST"
+            )
+            negative = (
+                "DISLIKE_POST"
+                if post.platform == "twitter"
+                else "DOWNVOTE_POST"
+            )
+
+            for agent in random.sample(
+                same, min(len(same), random.randint(1, 2))
+            ):
+                actions.append(cls._engagement_action(
+                    simulation_id, agent, post, round_num, positive
+                ))
+
+            if opposite and random.random() < 0.75:
+                actions.append(cls._engagement_action(
+                    simulation_id,
+                    random.choice(opposite),
+                    post,
+                    round_num,
+                    negative,
+                ))
+
+            if neutral and random.random() < 0.35:
+                actions.append(cls._engagement_action(
+                    simulation_id,
+                    random.choice(neutral),
+                    post,
+                    round_num,
+                    positive,
+                ))
+
+            if same and random.random() < 0.30:
+                actions.append(cls._engagement_action(
+                    simulation_id,
+                    random.choice(same),
+                    post,
+                    round_num,
+                    "REPOST",
+                ))
+
+        return actions
+
+    @classmethod
+    def _engagement_action(
+        cls,
+        simulation_id: str,
+        agent: Dict[str, Any],
+        post: AgentAction,
+        round_num: int,
+        action_type: str,
+    ) -> AgentAction:
+        return AgentAction(
+            round_num=round_num,
+            timestamp=datetime.now().isoformat(),
+            platform=post.platform,
+            agent_id=int(agent["id"]),
+            agent_name=str(agent["name"]),
+            action_type=action_type,
+            action_args=cls._engagement_args(
+                action_type,
+                {
+                    "post_id": post.post_id,
+                    "agent_name": post.agent_name,
+                    "content": post.result,
+                },
+            ),
+            result="",
+            success=True,
+            post_id=cls._next_post_id(simulation_id, round_num),
+            parent_post_id=post.post_id,
+            interaction_type=action_type,
+        )
 
     @classmethod
     def _build_action_prompt(
@@ -1223,22 +1568,31 @@ class SimulationRunner:
 
         # Previous conversation so the agent can answer instead of starting
         # a new monologue every time.
-        recent = list(conversation or [])[-max(1, Config.SIMULATION_CONTEXT_POSTS):]
+        recent = list(conversation or [])[
+            -max(1, Config.SIMULATION_CONTEXT_POSTS):
+        ]
         if recent:
             lines.append("")
-            lines.append("PREVIOUS CONVERSATION CONTEXT (last 5 posts):")
+            lines.append(
+                f"PREVIOUS CONVERSATION CONTEXT "
+                f"(last {len(recent)} posts):"
+            )
             for post in recent:
                 lines.append(
-                    f"- [{post.get('agent_name')}] ({post.get('interaction_type')}): "
-                    f"{str(post.get('content') or '')[:220]}"
+                    f"- [{post.get('post_id')}] "
+                    f"{post.get('agent_name')} "
+                    f"({post.get('interaction_type')}): "
+                    f"{str(post.get('content') or '')[:300]}"
                 )
 
         if parent_post:
             lines.append("")
             lines.append("POST YOU ARE ANSWERING:")
             lines.append(
-                f"- [{parent_post.get('agent_name')}] ({parent_post.get('interaction_type')}): "
-                f"{str(parent_post.get('content') or '')[:400]}"
+                f"- [{parent_post.get('post_id')}] "
+                f"{parent_post.get('agent_name')} "
+                f"({parent_post.get('interaction_type')}): "
+                f"{str(parent_post.get('content') or '')[:500]}"
             )
 
         if hot_topics:
@@ -1255,6 +1609,10 @@ class SimulationRunner:
         lines.append("")
 
         instruction = {
+            "CREATE_POST": (
+                "Start a new thread with a concrete claim, fact, or reaction. "
+                "Do not repeat an existing post."
+            ),
             "REPLY": "You are replying to the post above. Address that person directly.",
             "QUOTE_POST": "You are quoting the post above and adding your own take on it.",
             "COUNTER_ARGUMENT": (
@@ -1273,6 +1631,8 @@ class SimulationRunner:
         if instruction:
             lines.append(f"- {instruction}")
         lines.extend([
+            "- When replying, address the other agent by name and reference "
+            "their specific point",
             "- If someone mentioned you or your viewpoint, REPLY to them directly",
             "- If you disagree with a previous post, write a counter-argument",
             "- If you agree, amplify with your own perspective",

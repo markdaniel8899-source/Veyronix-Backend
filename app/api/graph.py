@@ -340,7 +340,8 @@ def generate_ontology():
         
         project.ontology = {
             "entity_types": ontology.get("entity_types", []),
-            "edge_types": ontology.get("edge_types", [])
+            "edge_types": ontology.get("edge_types", []),
+            "key_entities": ontology.get("key_entities", []),
         }
         project.analysis_summary = ontology.get("analysis_summary", "")
         project.status = ProjectStatus.ONTOLOGY_GENERATED
@@ -433,8 +434,8 @@ def _build_graph_impl():
         {
             "project_id": "proj_xxxx",  // required，from API 1
             "graph_name": "graph name",    // optional
-            "chunk_size": 500,          // optional，default 500
-            "chunk_overlap": 50         // optional，default 50
+            "chunk_size": 4000,         // optional，default 4000
+            "chunk_overlap": 200        // optional，default 200
         }
         
     return：
@@ -545,8 +546,25 @@ def _build_graph_impl():
         
         # get configuration
         graph_name = data.get('graph_name', project.name or 'Veyronix Graph')
-        chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
-        chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
+
+        default_chunk_size = Config.DEFAULT_CHUNK_SIZE
+        default_chunk_overlap = Config.DEFAULT_CHUNK_OVERLAP
+
+        chunk_size = data.get('chunk_size')
+        if chunk_size is None:
+            chunk_size = (
+                project.chunk_size
+                if project.chunk_size and project.chunk_size >= 2000
+                else default_chunk_size
+            )
+
+        chunk_overlap = data.get('chunk_overlap')
+        if chunk_overlap is None:
+            chunk_overlap = (
+                project.chunk_overlap
+                if project.chunk_overlap and project.chunk_overlap >= 100
+                else default_chunk_overlap
+            )
         if not isinstance(chunk_size, int) or chunk_size <= 0:
             return jsonify({"success": False, "error": "chunk_size must be a positive integer"}), 400
         if (

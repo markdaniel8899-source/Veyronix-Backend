@@ -124,6 +124,9 @@ def test_agent_starts_a_post_without_history():
 
 def test_agent_answers_another_agent(monkeypatch):
     monkeypatch.setattr(Config, "SIMULATION_REPLY_RATIO", 1.0)
+    monkeypatch.setattr(
+        "app.services.simulation_runner.random.random", lambda: 0.5
+    )
     agent = {"id": 0, "name": "Amina", "stance": "supportive"}
     conversation = [
         {
@@ -131,7 +134,7 @@ def test_agent_answers_another_agent(monkeypatch):
             "parent_post_id": "",
             "agent_id": 1,
             "agent_name": "Bruno",
-            "platform": "reddit",
+            "platform": "twitter",
             "round_num": 1,
             "interaction_type": "CREATE_POST",
             "stance": "opposing",
@@ -151,6 +154,9 @@ def test_agent_answers_another_agent(monkeypatch):
 def test_disagreeing_agent_answers_with_a_counter_argument(monkeypatch):
     monkeypatch.setattr(Config, "SIMULATION_REPLY_RATIO", 1.0)
     monkeypatch.setattr("app.services.simulation_runner.random.choice", lambda items: items[0])
+    monkeypatch.setattr(
+        "app.services.simulation_runner.random.random", lambda: 0.5
+    )
     agent = {"id": 0, "name": "Amina", "stance": "supportive"}
     conversation = [
         {
@@ -158,7 +164,7 @@ def test_disagreeing_agent_answers_with_a_counter_argument(monkeypatch):
             "parent_post_id": "",
             "agent_id": 1,
             "agent_name": "Bruno",
-            "platform": "reddit",
+            "platform": "twitter",
             "round_num": 1,
             "interaction_type": "CREATE_POST",
             "stance": "opposing",

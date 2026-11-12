@@ -80,12 +80,12 @@ class Config:
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
 
     # Text processing configuration
-    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '500'))
-    DEFAULT_CHUNK_OVERLAP = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', '50'))
+    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '4000'))
+    DEFAULT_CHUNK_OVERLAP = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', '200'))
 
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(
-        os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '20')
+        os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '30')
     )
     OASIS_SIMULATION_DATA_DIR = os.path.join(UPLOAD_FOLDER, 'simulations')
 
@@ -100,17 +100,22 @@ class Config:
     )
     # How many agents may post in a single round.
     SIMULATION_MAX_ACTIVE_PER_ROUND = int(
-        os.environ.get('SIMULATION_MAX_ACTIVE_PER_ROUND', '12')
+        os.environ.get('SIMULATION_MAX_ACTIVE_PER_ROUND', '20')
     )
     # How many earlier posts are shown to an agent so it can reply.
     SIMULATION_CONTEXT_POSTS = int(
-        os.environ.get('SIMULATION_CONTEXT_POSTS', '5')
+        os.environ.get('SIMULATION_CONTEXT_POSTS', '10')
     )
     # Share of the posts that answer another agent instead of starting a
     # new thread. This is what makes the conversation two-way.
     SIMULATION_REPLY_RATIO = float(
-        os.environ.get('SIMULATION_REPLY_RATIO', '0.7')
+        os.environ.get('SIMULATION_REPLY_RATIO', '0.65')
     )
+    # Generate free like/dislike/upvote/repost actions after each round
+    # without spending additional LLM calls.
+    SIMULATION_ENGAGEMENT_ENABLED = os.environ.get(
+        'SIMULATION_ENGAGEMENT_ENABLED', 'true'
+    ).lower() in {'1', 'true', 'yes', 'on'}
 
     # OASIS platform available actions
     OASIS_TWITTER_ACTIONS = [

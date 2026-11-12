@@ -1052,15 +1052,17 @@ Important:
             if target_count is not None
             else Config.SIMULATION_MIN_ENTITIES
         )
-        target = max(target, len(entities))
+        # Never drop real entities, but never exceed the hard cap.
+        target = max(len(entities), target)
         target = min(target, Config.SIMULATION_MAX_ENTITIES)
+        source_entities = entities[:target]
 
         cast: List[Dict[str, Any]] = []
         used_names: set[str] = set()
         # Exact 30/40/30 stance ratio for the size of the cast.
         stance_mix = self._stance_mix_for_size(target)
 
-        for entity in entities:
+        for entity in source_entities:
             cast.append(
                 self._annotate_cast_member(
                     entity, len(cast), used_names, stance_mix
@@ -1079,7 +1081,7 @@ Important:
 
         index = 0
         while len(cast) < target:
-            base = entities[index % len(entities)]
+            base = source_entities[index % len(source_entities)]
             cast.append(
                 self._synthetic_cast_member(
                     len(cast), used_names, base, stance_mix

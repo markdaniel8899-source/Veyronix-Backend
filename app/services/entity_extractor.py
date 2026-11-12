@@ -37,9 +37,10 @@ class EntityExtractor:
         text: str,
         ontology: Dict[str, Any],
         graph_id: str,
-        chunk_size: int = 500,
-        chunk_overlap: int = 50,
-        max_chunks: int = 8,
+        chunk_size: int = 4000,
+        chunk_overlap: int = 200,
+        max_chunks: int = 24,
+        max_entities: int = 150,
         progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
         """Return (entities, edges, total_chunks). Never raises on LLM errors."""
@@ -57,6 +58,13 @@ class EntityExtractor:
 
         entities: Dict[str, Dict[str, Any]] = {}
         edges: Dict[str, Dict[str, Any]] = {}
+
+        # The ontology pass already saw up to 100k characters. Reuse its
+        # named-entity inventory as a high-priority seed.
+        self._seed_entities_from_ontology(
+            ontology, graph_id, entity_types, entities, edges
+        )
+
         min_interval = 60.0 / max(1, Config.LLM_RPM)
         last_call = 0.0
 
@@ -76,15 +84,49 @@ class EntityExtractor:
                 last_call = time.monotonic()
             except Exception as exc:
                 last_call = time.monotonic()
-                logger.warning("Entity extraction failed for chunk %s: %s", chunk_index, exc)
+                logger.warning(
+                    "Entity extraction failed for chunk %s: %s",
+                    chunk_index,
+                    exc,
+                )
                 payload = {}
 
-            self._merge_payload(payload, chunk, graph_id, entity_types, entities, edges)
+            self._merge_payload(
+                payload,
+                chunk,
+                graph_id,
+                entity_types,
+                entities,
+                edges,
+            )
 
         if not entities:
             # Heuristic fallback keeps the pipeline usable when the model is
             # temporarily unavailable, while still producing named entities.
             self._heuristic_entities(text, entity_types, graph_id, entities)
+
+        if entities and max_entities > 0 and len(entities) > max_entities:
+            ranked = sorted(
+                entities.values(),
+                key=lambda entity: (
+                    1 if entity.get("is_seed") else 0,
+                    len(entity.get("related_edges") or []),
+                    len(entity.get("summary") or ""),
+                ),
+                reverse=True,
+            )
+            kept_uuids = {entity["uuid"] for entity in ranked[:max_entities]}
+            entities = {
+                key: value
+                for key, value in entities.items()
+                if value["uuid"] in kept_uuids
+            }
+            edges = {
+                key: value
+                for key, value in edges.items()
+                if value["source_node_uuid"] in kept_uuids
+                and value["target_node_uuid"] in kept_uuids
+            }
 
         return list(entities.values()), list(edges.values()), total_chunks
 
@@ -105,8 +147,54 @@ class EntityExtractor:
 
     # Token budget for one extraction call. The first attempt allows a rich
     # answer, the compact retry is used when the model hits the limit.
-    EXTRACT_MAX_TOKENS = 3000
-    EXTRACT_RETRY_MAX_TOKENS = 1600
+    EXTRACT_MAX_TOKENS = 7000
+    EXTRACT_RETRY_MAX_TOKENS = 3500
+
+    def _seed_entities_from_ontology(
+        self,
+        ontology: Dict[str, Any],
+        graph_id: str,
+        allowed_types: List[str],
+        entities: Dict[str, Dict[str, Any]],
+        edges: Dict[str, Dict[str, Any]],
+    ) -> None:
+        key_entities = (ontology or {}).get("key_entities")
+        if not isinstance(key_entities, list) or not key_entities:
+            return
+
+        payload_entities = []
+        for item in key_entities:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            payload_entities.append({
+                "name": name,
+                "type": item.get("type") or "Entity",
+                "summary": (
+                    item.get("summary")
+                    or item.get("evidence")
+                    or item.get("role")
+                    or ""
+                ),
+                "attributes": {
+                    "role": item.get("role") or "",
+                    "aliases": item.get("aliases") or [],
+                    "evidence": item.get("evidence") or "",
+                    "inferred": bool(item.get("inferred", False)),
+                },
+            })
+
+        self._merge_payload(
+            {"entities": payload_entities, "relationships": []},
+            "",
+            graph_id,
+            allowed_types,
+            entities,
+            edges,
+            seed=True,
+        )
 
     def _extract_chunk(
         self, chunk: str, entity_types: List[str]
@@ -132,9 +220,10 @@ class EntityExtractor:
         self, chunk: str, entity_types: List[str], compact: bool = False
     ) -> Dict[str, Any]:
         type_list = ", ".join(entity_types)
-        entity_budget = "3-6" if compact else "3-12"
-        summary_budget = "20 words" if compact else "40 words"
-        prompt = f"""Extract the most important real entities and relationships from this text.
+        entity_budget = "10-20" if compact else "15-30"
+        summary_budget = "30 words" if compact else "60 words"
+
+        prompt = f"""Extract EVERY named entity and relationship from this text.
 
 Allowed entity types: {type_list}
 
@@ -142,31 +231,38 @@ Return strict JSON with this shape:
 {{
   "entities": [
     {{
-      "name": "exact entity name",
+      "name": "exact entity name from the text",
       "type": "one allowed entity type",
-      "summary": "1-2 sentence factual summary",
-      "attributes": {{"key": "value"}}
+      "summary": "1-2 factual sentences",
+      "attributes": {{"role": "...", "affiliation": "...", "platform": "...", "aliases": "..."}}
     }}
   ],
   "relationships": [
     {{
       "source": "source entity name",
       "target": "target entity name",
-      "relation": "short relationship label",
+      "relation": "UPPER_SNAKE_CASE label",
       "fact": "one sentence describing the relationship"
     }}
   ]
 }}
 
 Rules:
-- Extract {entity_budget} concrete entities (people, organizations, places, products, events).
-- Use only names that actually appear in the text.
-- Do not invent facts.
+- Extract {entity_budget} entities. Do not stop at the first few names.
+- Include every named person, organization, government body, company,
+  platform, media outlet, university, hospital, union, NGO, named
+  policy/program, and named role group.
+- Include central actors that are only described by role (for example
+  "the regulator"). Use the role as the name and set
+  attributes.inferred to true.
+- Include aliases, handles, and short names when the text provides them.
+- Use only facts that appear in the text. Do not invent names or facts.
+- Every relationship must connect two entities that appear in the text.
 - Keep summaries under {summary_budget}.
-- If no clear entities exist, return empty arrays.
+- If the text truly contains no named actors, return empty arrays.
 
 TEXT:
-{chunk[:2400]}
+{chunk[:6000]}
 """
         result = self.llm.chat_json(
             messages=[
@@ -197,9 +293,39 @@ TEXT:
 
     def _normalize_type(self, raw_type: str, allowed: List[str]) -> str:
         raw = str(raw_type or "").strip()
+        if not raw:
+            return "Person" if "Person" in allowed else (
+                allowed[0] if allowed else "Entity"
+            )
+
         for allowed_type in allowed:
             if raw.lower() == allowed_type.lower():
                 return allowed_type
+
+        for allowed_type in allowed:
+            if (
+                allowed_type.lower() in raw.lower()
+                or raw.lower() in allowed_type.lower()
+            ):
+                return allowed_type
+
+        org_hints = (
+            "org", "company", "agency", "ministry", "university", "media",
+            "platform", "group", "team", "committee", "department", "ngo",
+            "bank", "hospital", "school", "union", "party", "council",
+        )
+        if any(hint in raw.lower() for hint in org_hints):
+            for candidate in (
+                "Organization", "Company", "GovernmentAgency",
+                "MediaOutlet", "Platform",
+            ):
+                if candidate in allowed:
+                    return candidate
+
+        for candidate in ("Person", "Organization"):
+            if candidate in allowed:
+                return candidate
+
         return allowed[0] if allowed else "Entity"
 
     def _merge_payload(
@@ -210,6 +336,7 @@ TEXT:
         allowed_types: List[str],
         entities: Dict[str, Dict[str, Any]],
         edges: Dict[str, Dict[str, Any]],
+        seed: bool = False,
     ) -> None:
         raw_entities = payload.get("entities") if isinstance(payload, dict) else None
         if not isinstance(raw_entities, list):
@@ -238,6 +365,7 @@ TEXT:
                         existing["summary"] + " " + summary
                     ).strip()[:900]
                 existing["attributes"].update(attributes)
+                existing["is_seed"] = existing.get("is_seed", False) or seed
                 continue
 
             entities[key] = {
@@ -250,6 +378,7 @@ TEXT:
                 "graph_id": graph_id,
                 "related_edges": [],
                 "related_nodes": [],
+                "is_seed": seed,
             }
 
         raw_edges = payload.get("relationships") if isinstance(payload, dict) else None
@@ -280,6 +409,7 @@ TEXT:
                         "graph_id": graph_id,
                         "related_edges": [],
                         "related_nodes": [],
+                        "is_seed": False,
                     }
 
             edge_key = f"{source_key}|{target_key}|{relation.lower()}"
@@ -337,7 +467,7 @@ TEXT:
         }
         candidates = re.findall(
             r"\b([A-Z][a-zA-Z0-9&'.-]*(?:\s+[A-Z][a-zA-Z0-9&'.-]*){0,3})\b",
-            text[:20000],
+            text[:100000],
         )
         counts: Dict[str, int] = {}
         display: Dict[str, str] = {}
@@ -349,7 +479,7 @@ TEXT:
             counts[key] = counts.get(key, 0) + 1
             display.setdefault(key, name)
 
-        ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:12]
+        ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:40]
         default_type = entity_types[0] if entity_types else "Entity"
         for key, _count in ranked:
             name = display[key]

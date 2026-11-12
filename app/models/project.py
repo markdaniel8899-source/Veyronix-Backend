@@ -48,8 +48,8 @@ class Project:
     
     # configuration
     simulation_requirement: Optional[str] = None
-    chunk_size: int = 500
-    chunk_overlap: int = 50
+    chunk_size: int = 4000
+    chunk_overlap: int = 200
     
     # error information
     error: Optional[str] = None
@@ -98,8 +98,8 @@ class Project:
             zep_batch_id=data.get('zep_batch_id'),
             zep_batch_operation_id=data.get('zep_batch_operation_id'),
             simulation_requirement=data.get('simulation_requirement'),
-            chunk_size=data.get('chunk_size', 500),
-            chunk_overlap=data.get('chunk_overlap', 50),
+            chunk_size=data.get('chunk_size', 4000),
+            chunk_overlap=data.get('chunk_overlap', 200),
             error=data.get('error')
         )
 

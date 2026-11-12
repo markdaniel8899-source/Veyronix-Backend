@@ -45,149 +45,100 @@ def _to_upper_snake_case(name: str) -> str:
 
 
 # ontology generate of system hint word
-ONTOLOGY_SYSTEM_PROMPT = """You are a professional of knowledge graph ontology design expert。Your task is to analyze the given text content and simulation requirement，Designed to fit**social media public opinion simulation**of entity type and relationship type。
+ONTOLOGY_SYSTEM_PROMPT = """You are a knowledge-graph architect for a social-media public-opinion simulation.
 
-**important：You must output a valid of JSON format data，Do not output any other content。**
+Your job is to read the supplied document and return ONE valid JSON object that defines:
+1. the entity TYPES needed to model the actors in this specific document;
+2. a key-entity INVENTORY of the named people, organizations, platforms, agencies, companies, media outlets, and role groups that actually appear in the document;
+3. the relationship TYPES that connect them.
 
-## Core task background
+Return JSON only. No markdown, no commentary.
 
-We are in build one**social media public opinion simulation system**。in this system：
-- Every entity is a can speak out on social media、interactive、disseminate information of"account"or"main body"
-- Entities will affect each other、repost、comment、respond
-- We need simulation of public opinion, reaction of all parties in the event, and information propagation path
+## Output schema
 
-therefore，**entity must be a real existence in reality in of、can in speak out on social media and interact of subject**：
-
-**can be**：
-- specific of person（public figure、party、opinion leader、expert scholar、regular person）
-- company、enterprise（Including its official account）
-- organization（University、association、NGO、Trade unions etc.）
-- government departments、supervision organization
-- media organization（newspaper、TV station、from media、website）
-- social media platform itself
-- representatives of specific groups（such as alumni association、followers group、Rights protection groups etc.）
-
-**no can be**：
-- abstraction（like"public opinion"、"mood"、"trend"）
-- theme/topic（like"academic integrity"、"education reform"）
-- view/manner（like"support side"、"Opposition"）
-
-## output format
-
-Please output JSON format，include the following structures：
-
-```json
 {
-    "entity_types": [
-        {
-            "name": "entity type name（English，PascalCase）",
-            "description": "short description（English，no more than 100 characters）",
-            "attributes": [
-                {
-                    "name": "attribute name（English，snake_case）",
-                    "type": "text",
-                    "description": "Property description"
-                }
-            ],
-            "examples": ["example entity 1", "example entity 2"]
-        }
-    ],
-    "edge_types": [
-        {
-            "name": "relationship type name（English，UPPER_SNAKE_CASE）",
-            "description": "short description（English，no more than 100 characters）",
-            "source_targets": [
-                {"source": "source entity type", "target": "target entity type"}
-            ],
-            "attributes": []
-        }
-    ],
-    "analysis_summary": "Briefly analyze the text content of description"
+  "entity_types": [
+    {
+      "name": "PascalCase type name",
+      "description": "short description, max 100 characters",
+      "attributes": [
+        {"name": "snake_case", "type": "text", "description": "property description"}
+      ],
+      "examples": ["named example from the document"]
+    }
+  ],
+  "key_entities": [
+    {
+      "name": "exact name used in the document",
+      "type": "one of entity_types",
+      "role": "their role or title in this document",
+      "aliases": ["other names, short names, or handles used in the document"],
+      "evidence": "short phrase from the document showing they exist",
+      "summary": "one factual sentence",
+      "inferred": false
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "UPPER_SNAKE_CASE relationship name",
+      "description": "short description, max 100 characters",
+      "source_targets": [{"source": "source entity type", "target": "target entity type"}],
+      "attributes": []
+    }
+  ],
+  "analysis_summary": "brief analysis of the document"
 }
-```
 
-## Design Guidelines（extremely important！）
+## Entity type rules
 
-### 1. entity type design - must strictly observe
+- Return 8-12 entity types. This is a limit on TYPES, not on entities.
+- Always include the fallbacks `Person` and `Organization`.
+- The other 6-10 types must be specific to THIS document. Examples:
+  Regulator, Ministry, PoliticalParty, MediaOutlet, Platform, University,
+  Hospital, Union, NGO, Company, ActivistGroup, Whistleblower, Journalist,
+  Executive, Official, Researcher, Student, Investor, CommunityGroup.
+- Never return only generic types. If the document is about a crisis, include
+  the document's actual actor categories.
+- A type must be a real actor that can speak or be spoken about on social media.
+  Do not create types for abstract topics, moods, or opinions.
 
-**count requirements：must just right 10 entity type**
+## Key entity rules (critical)
 
-**Layer times structure requirements（must include both concrete type and fallback type）**：
+- Extract 40-80 key entities from the document. If the document is short,
+  extract every named actor; do not pad with invented names.
+- Include every named person, organization, government body, company, platform,
+  media outlet, university, hospital, union, NGO, named policy/program, and
+  named role group.
+- Include actors that are central but only described by role (for example
+  "the regulator", "the striking workers"). Set `"inferred": true` and use the
+  role as the name ONLY when the document gives no proper name. Never fabricate
+  a proper name.
+- Include aliases, short names, handles, and translations used in the document.
+- `evidence` must be a short quote or close paraphrase from the document.
+  Do not invent evidence.
+- Every key entity's `type` must be one of the `entity_types` you returned.
+- Prefer specific named actors over generic labels like "Person" or
+  "Organization". Use the fallback types only when no specific type fits.
 
-you of 10 entity type must include the following underlying times：
+## Relationship rules
 
-A. **fallback type（must include，Put after in list most 2 NO QUERY SPECIFIED. EXAMPLE REQUEST: GET?Q=HELLO&LANGPAIR=EN|IT）**：
-   - `Person`: any natural human body of fallback type。when a person does not belong to other more specifically of person type，fall into this category。
-   - `Organization`: any organization of fallback type。When an organization does not belong to other more specific of organization type，fall into this category。
+- Return 6-12 edge types.
+- Relationships must describe real social-media-era connections:
+  WORKS_FOR, REPRESENTS, REGULATES, REPORTS_ON, CRITICIZES, SUPPORTS,
+  OPPOSES, INVESTIGATES, PARTNERS_WITH, COMPETES_WITH, FUNDS, EMPLOYS,
+  MEMBER_OF, RESPONDS_TO.
+- `source_targets` must cover the entity types you defined.
+- Each entity type gets 1-3 attributes.
+- Never use reserved attribute names: uuid, name, group_id, graph_id,
+  created_at, summary, name_embedding.
 
-B. **specific type（8 NO QUERY SPECIFIED. EXAMPLE REQUEST: GET?Q=HELLO&LANGPAIR=EN|IT，Design based on text content）**：
-   - For the main role of in text，Design more specific of type
-   - for example：if text involves academic events，can have `Student`, `Professor`, `University`
-   - for example：if text involves business events，can have `Company`, `CEO`, `Employee`
+## Quality bar
 
-**for what need fallback type**：
-- Various characters will appear in text，like"Primary and secondary school teachers"、"Passerby"、"A certain netizen"
-- if no specifically of type match，they should be classified `Person`
-- Same reason，small organization、Temporary groups etc. should belong to `Organization`
-
-**Specific type of design principles**：
-- Identify high-frequency or key roles of type in from text
-- Each specific type should have a clear boundary of edge，avoid overlap
-- description must clearly describe the difference between this type and fallback type of
-
-### 2. relationship type design
-
-- count：6-10 NO QUERY SPECIFIED. EXAMPLE REQUEST: GET?Q=HELLO&LANGPAIR=EN|IT
-- relationship should reflect real connections in social media interactions
-- ensure relationship of source_targets Covers your definition of entity type
-
-### 3. Attribute design
-
-- per entity type 1-3 Key attributes
-- **note**：Property name cannot be used `name`、`uuid`、`group_id`、`graph_id`、`created_at`、`summary`（These are system reserved characters）
-- recommended use：`full_name`, `title`, `role`, `position`, `location`, `description` etc.
-
-## entity type reference
-
-**human（specific）**：
-- Student: student
-- Professor: professor/scholar
-- Journalist: reporter
-- Celebrity: star/internet celebrity
-- Executive: high tube
-- Official: government officials
-- Lawyer: lawyer
-- Doctor: doctor
-
-**human（fallback）**：
-- Person: any natural person（Use when it does not belong to the above specific types）
-
-**Organization type（specific）**：
-- University: high school
-- Company: company enterprise
-- GovernmentAgency: government organization
-- MediaOutlet: media organization
-- Hospital: Hospital
-- School: Primary and secondary schools
-- NGO: non-governmental organization
-
-**Organization type（fallback）**：
-- Organization: any organization（Use when it does not belong to the above specific types）
-
-## relationship type reference
-
-- WORKS_FOR: working on
-- STUDIES_AT: Studied at
-- AFFILIATED_WITH: Belong to
-- REPRESENTS: represent
-- REGULATES: supervision
-- REPORTS_ON: report
-- COMMENTS_ON: comment
-- RESPONDS_TO: respond
-- SUPPORTS: support
-- OPPOSES: be opposed to
-- COLLABORATES_WITH: cooperate
-- COMPETES_WITH: compete
+- The inventory must be specific enough that a reader can tell which document
+  it came from.
+- Do not return a generic ontology that could fit any document.
+- Do not stop at the first 5-10 names. Scan the whole supplied text for named
+  actors.
 """
 
 
@@ -247,12 +198,12 @@ class OntologyGenerator:
         
         return result
     
-    # pass to LLM of text maximum length（5 million characters）
-    MAX_TEXT_LENGTH_FOR_LLM = 50000
-    LONG_TEXT_CHUNK_SIZE = 8000
+    # Maximum document window passed to the ontology LLM.
+    MAX_TEXT_LENGTH_FOR_LLM = 100000
+    LONG_TEXT_CHUNK_SIZE = 10000
     LONG_TEXT_CHUNK_OVERLAP = 200
     MAX_LONG_TEXT_CHUNKS = 60
-    MIN_LONG_TEXT_EXCERPT = 400
+    MIN_LONG_TEXT_EXCERPT = 800
     
     def _build_user_message(
         self,
@@ -281,14 +232,15 @@ class OntologyGenerator:
 """
         
         message += """
-Please follow the above content，Design for society public opinion simulation of entity type and relationship type。
+Return the JSON object described in the system prompt.
 
-**must abide by the rules of**：
-1. must exactly output 10 entity type
-2. most after 2 must is fallback type：Person（person fallback）and Organization（organization fallback）
-3. forward 8 is designed based on text content of specific type
-4. all entity type must be the can utterance of the subject in reality，It cannot be an abstract concept
-5. Property name cannot be used name、uuid、group_id、graph_id etc. reserved characters，use full_name、org_name etc. alternative
+Rules:
+1. 8-12 entity types, including the `Person` and `Organization` fallbacks.
+2. 40-80 key_entities copied from the document, each with evidence.
+3. 6-12 edge types whose source_targets cover your entity types.
+4. Entity type names must be English PascalCase.
+5. Relationship type names must be English UPPER_SNAKE_CASE.
+6. Attribute names must be English snake_case.
 """
         
         return message
@@ -563,6 +515,54 @@ Please follow the above content，Design for society public opinion simulation o
                 return mapped
             pascal_name = _to_pascal_case(stripped)
             return pascal_name if pascal_name in valid_entity_names else None
+
+        raw_key_entities = result.get("key_entities")
+        if not isinstance(raw_key_entities, list):
+            raw_key_entities = []
+
+        processed_key_entities = []
+        seen_key_entities = set()
+        for raw in raw_key_entities[:200]:
+            if isinstance(raw, str):
+                item = {"name": raw}
+            elif isinstance(raw, dict):
+                item = dict(raw)
+            else:
+                continue
+
+            name = str(item.get("name") or "").strip()
+            if not name or name.lower() in seen_key_entities:
+                continue
+
+            entity_type = resolve_entity_name(str(item.get("type") or ""))
+            if entity_type is None:
+                entity_type = "Person"
+
+            aliases = item.get("aliases")
+            if not isinstance(aliases, list):
+                aliases = []
+
+            processed_key_entities.append({
+                "name": name[:120],
+                "type": entity_type,
+                "role": str(item.get("role") or "")[:200],
+                "aliases": [
+                    str(alias)[:80]
+                    for alias in aliases[:8]
+                    if str(alias).strip()
+                ],
+                "evidence": str(item.get("evidence") or "")[:300],
+                "summary": str(
+                    item.get("summary")
+                    or item.get("evidence")
+                    or item.get("role")
+                    or ""
+                )[:400],
+                "inferred": bool(item.get("inferred", False)),
+            })
+            seen_key_entities.add(name.lower())
+
+        result["key_entities"] = processed_key_entities[:120]
 
         processed_edges: List[Dict[str, Any]] = []
         seen_edge_names = set()
