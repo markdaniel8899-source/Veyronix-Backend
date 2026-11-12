@@ -61,7 +61,7 @@
     "step05Title": "Interaction",
     "step05Desc": "Chat with any simulated individual & converse with ReportAgent",
     "realitySeed": "01 / Reality Seed",
-    "supportedFormats": "Formats: PDF, MD, TXT",
+    "supportedFormats": "All file types supported",
     "dragToUpload": "Drag files to upload",
     "orBrowse": "or click to browse files",
     "inputParams": "Input Parameters",

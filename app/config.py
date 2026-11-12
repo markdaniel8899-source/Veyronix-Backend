@@ -77,7 +77,9 @@ class Config:
     UPLOAD_FOLDER = _abs_path(
         os.environ.get('STORAGE_PATH', './uploads'), './uploads'
     )
-    ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
+    # Every upload extension is accepted. FileParser tries to extract text
+    # and reports unreadable binary files per-file.
+    ALLOWED_EXTENSIONS = None
 
     # Text processing configuration
     DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '4000'))

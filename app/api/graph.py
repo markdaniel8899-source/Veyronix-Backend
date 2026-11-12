@@ -92,11 +92,13 @@ def _project_has_active_build(project) -> bool:
 
 
 def allowed_file(filename: str) -> bool:
-    """check file extension is allowed"""
-    if not filename or '.' not in filename:
-        return False
-    ext = os.path.splitext(filename)[1].lower().lstrip('.')
-    return ext in Config.ALLOWED_EXTENSIONS
+    """Accept every file type.
+
+    FileParser decides at extraction time whether a file contains readable
+    text. Binary files that cannot be decoded are reported per-file instead
+    of rejecting the whole upload.
+    """
+    return bool(filename and filename.strip())
 
 
 # ============== project management API ==============
@@ -292,31 +294,53 @@ def generate_ontology():
         # save file and extract text
         document_texts = []
         all_text = ""
-        
+        failed_files = []
+
         for file in uploaded_files:
-            if file and file.filename and allowed_file(file.filename):
-                # save file to project directory
-                file_info = ProjectManager.save_file_to_project(
-                    project.project_id, 
-                    file, 
-                    file.filename
-                )
-                project.files.append({
-                    "filename": file_info["original_filename"],
-                    "size": file_info["size"]
-                })
-                
-                # Extract text
+            if not (file and file.filename):
+                continue
+
+            # save file to project directory
+            file_info = ProjectManager.save_file_to_project(
+                project.project_id,
+                file,
+                file.filename
+            )
+
+            try:
                 text = FileParser.extract_text(file_info["path"])
                 text = TextProcessor.preprocess_text(text)
-                document_texts.append(text)
-                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
+                if not text.strip():
+                    raise ValueError("No readable text found in this file")
+            except Exception as exc:
+                logger.warning(
+                    "Text extraction failed for %s: %s",
+                    file.filename,
+                    exc
+                )
+                failed_files.append({
+                    "filename": file.filename,
+                    "error": str(exc)[:300],
+                })
+                try:
+                    os.remove(file_info["path"])
+                except OSError:
+                    pass
+                continue
+
+            project.files.append({
+                "filename": file_info["original_filename"],
+                "size": file_info["size"]
+            })
+            document_texts.append(text)
+            all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
         
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
             return jsonify({
                 "success": False,
-                "error": t('api.noDocProcessed')
+                "error": t('api.noDocProcessed'),
+                "failed_files": failed_files,
             }), 400
         
         # save extract of text
@@ -356,6 +380,7 @@ def generate_ontology():
                 "ontology": project.ontology,
                 "analysis_summary": project.analysis_summary,
                 "files": project.files,
+                "failed_files": failed_files,
                 "total_text_length": project.total_text_length
             }
         })
