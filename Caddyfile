@@ -1,0 +1,54 @@
+# ============================================================
+# Veyronix reverse proxy
+#
+# 1. Set VEYRONIX_DOMAIN to your public domain before starting Caddy.
+# 2. The rate_limit directive requires the caddy-ratelimit module:
+#      caddy add-package github.com/mholt/caddy-ratelimit
+#      sudo systemctl restart caddy
+# 3. CORS is handled by Flask (CORS_ORIGINS in backend/.env). Do not add
+#    Access-Control-* headers here or browsers will see duplicates.
+# 4. Authorization headers are forwarded to Flask unchanged.
+# ============================================================
+
+{
+	admin 127.0.0.1:2019
+}
+
+{$VEYRONIX_DOMAIN:localhost} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# Per-IP abuse protection. The LLM token bucket inside Flask still
+	# enforces LLM_RPM and LLM_MAX_CONCURRENT for expensive calls.
+	rate_limit {
+		zone api_read {
+			match {
+				path /api/*
+				method GET
+			}
+			key    {http.request.remote.host}
+			window 1m
+			events 180
+		}
+		zone api_write {
+			match {
+				path /api/*
+				method POST PUT DELETE
+			}
+			key    {http.request.remote.host}
+			window 1m
+			events 60
+		}
+	}
+
+	reverse_proxy 127.0.0.1:5001 {
+		header_up X-Real-IP {http.request.remote.host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
