@@ -257,6 +257,7 @@ Rules:
   attributes.inferred to true.
 - Include aliases, handles, and short names when the text provides them.
 - Use only facts that appear in the text. Do not invent names or facts.
+- STRICT RULE: You must ONLY generate entities based on names, roles, organizations, and groups explicitly mentioned in the provided document. DO NOT invent random names, nationalities, or unrelated topics (like 'Atlas' or 'South American parents'). If the document is about Wuhan University, all entities must be related to that specific context (e.g., Students, Alumni, WHU Administration, specific media outlets mentioned).
 - Every relationship must connect two entities that appear in the text.
 - Keep summaries under {summary_budget}.
 - If the text truly contains no named actors, return empty arrays.

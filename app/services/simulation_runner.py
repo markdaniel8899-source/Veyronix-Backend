@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,6 +32,21 @@ from .rate_limiter import TokenBucketRateLimiter
 logger = get_logger('Veyronix.simulation_runner')
 
 _cleanup_registered = False
+
+
+def clean_llm_output(text: str) -> str:
+    """Strip accidental prompt-leakage phrases from LLM output.
+
+    Removes leading reasoning / instructional chatter so only the raw post
+    content is saved as the AgentAction result.
+    """
+    text = re.sub(
+        r'^.*?(?=(?:Procedural|The|I|We|As|From|Revoking|Support|Strongly|Exactly|Well said))',
+        '',
+        text,
+        flags=re.DOTALL,
+    )
+    return text.strip()
 
 
 class RunnerStatus(str, Enum):
@@ -859,7 +875,16 @@ class SimulationRunner:
                                             "Write one short, realistic social "
                                             "media post or comment (max 3 "
                                             "sentences). Use the same language "
-                                            "as the source document."
+                                            "as the source document. "
+                                            "CRITICAL OUTPUT RULE: Output ONLY "
+                                            "the final social media post/comment "
+                                            "text. DO NOT output your thinking "
+                                            "process. DO NOT repeat the "
+                                            "instructions. DO NOT start with "
+                                            "'The user wants me to' or 'Let me "
+                                            "review'. Just output the raw post "
+                                            "content. If you must think, do it "
+                                            "silently."
                                         ),
                                     },
                                     {"role": "user", "content": prompt},
@@ -868,6 +893,7 @@ class SimulationRunner:
                                 max_tokens=220,
                             )
                             text = (text or "").strip()
+                            text = clean_llm_output(text)
                             if not text:
                                 text = "(no response)"
                             return AgentAction(
@@ -1639,6 +1665,9 @@ class SimulationRunner:
             "- Stay in character completely",
             "- Use natural language appropriate for the platform",
             "- Max 60 words",
+            "- MANDATORY: You must naturally weave at least one specific fact, "
+            "number, or name from the 'Context/Data Points' section into your "
+            "post to make it credible. Do not use generic statements.",
             f"- Round {round_num}/{total_rounds or round_num}, Simulated Hour {simulated_hour}:00",
         ])
         lines.append("")
